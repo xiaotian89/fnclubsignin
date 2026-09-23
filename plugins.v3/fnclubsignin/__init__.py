@@ -40,7 +40,7 @@ class FnClubSignin(_PluginBase):
     plugin_name = "飞牛论坛签到"
     plugin_desc = "自动登录飞牛私有云论坛(club.fnnas.com)完成天天打卡，获取飞牛币。"
     plugin_icon = "https://club.fnnas.com/favicon.ico"
-    plugin_version = "1.3.0"
+    plugin_version = "1.4.0"
     plugin_author = "xiaotian"
     author_url = "https://club.fnnas.com"
     plugin_config_prefix = "fnnassignin_"
@@ -507,14 +507,23 @@ class FnClubSignin(_PluginBase):
         return result
 
     async def _do_sign(self) -> dict:
-        """核心签到：优先 Cookie 直签，否则账号密码登录。"""
+        """核心签到：Cookie 直签优先，失效自动降级账号密码登录。"""
         # 模式一：Cookie 直签（推荐，无需账号密码）
         if self._cookie:
-            return await self._do_sign_cookie()
+            result = await self._do_sign_cookie()
+            # Cookie 失效且配置了账号密码 → 自动降级为账号密码登录
+            if (not result.get("success")) and result.get("message") == "登录态失效" \
+                    and self._username and self._password:
+                logger.info("飞牛签到：Cookie 失效，自动降级账号密码登录")
+                return await self._do_sign_login(fallback_from="Cookie 失效")
+            return result
         # 模式二：账号密码登录
         if not self._username or not self._password:
             return {"success": False, "message": "未配置 Cookie 或账号密码", "detail": "请在插件配置中填写 Cookie 或账号密码"}
+        return await self._do_sign_login(fallback_from="")
 
+    async def _do_sign_login(self, fallback_from: str = "") -> dict:
+        """账号密码登录签到：登录(带验证) → 打卡。登录成功自动保存新 Cookie 供下次直签。"""
         async with httpx2.AsyncClient(
             timeout=httpx2.Timeout(30.0),
             follow_redirects=True,
@@ -529,12 +538,23 @@ class FnClubSignin(_PluginBase):
             if not formhash:
                 return {"success": False, "message": "页面未返回 formhash", "detail": ""}
 
-            # 2. 模拟登录
-            login_ok = await self._login(client, formhash)
+            # 2. 模拟登录（内置登录态二次验证）
+            login_ok, login_detail = await self._login(client, formhash)
             if not login_ok:
-                return {"success": False, "message": "登录失败", "detail": "用户名或密码错误，或触发了登录验证"}
+                prefix = "（Cookie 失效后降级登录失败）" if fallback_from else ""
+                return {"success": False, "message": "登录失败" + prefix, "detail": login_detail}
 
-            # 3. 登录后重新获取打卡页（拿新的 sign）
+            # 3. 登录成功 → 保存新 Cookie（供下次 Cookie 直签）
+            try:
+                new_cookie = self._dump_cookies(client)
+                if new_cookie:
+                    self._cookie = new_cookie
+                    self.update_config({"cookie": new_cookie})
+                    logger.info("飞牛签到：登录成功，已自动更新 Cookie")
+            except Exception as err:
+                logger.warning(f"飞牛签到：登录后 Cookie 保存失败({err})")
+
+            # 4. 登录后重新获取打卡页（拿新的 sign）
             page_html2 = await self._fetch(client, self._base_url + self._sign_page)
             if not page_html2:
                 return {"success": False, "message": "登录后无法访问打卡页", "detail": ""}
@@ -547,7 +567,7 @@ class FnClubSignin(_PluginBase):
             if not sign2:
                 return {"success": False, "message": "未获取到打卡入口", "detail": "可能已打卡或需要验证码"}
 
-            # 4. 执行打卡
+            # 5. 执行打卡
             sign_url = self._base_url + f"/plugin.php?id=zqlj_sign&sign={sign2}"
             resp_html = await self._fetch(client, sign_url)
             if not resp_html:
@@ -617,8 +637,8 @@ class FnClubSignin(_PluginBase):
         except Exception as err:
             logger.warning(f"飞牛签到：人类化浏览跳过({err})")
 
-    async def _login(self, client: httpx2.AsyncClient, formhash: str) -> bool:
-        """Discuz 标准登录，返回是否成功。"""
+    async def _login(self, client: httpx2.AsyncClient, formhash: str) -> tuple[bool, str]:
+        """Discuz 标准登录。返回 (是否成功, 失败原因)。成功后额外验证登录态，防止假成功。"""
         data = {
             "formhash": formhash,
             "username": self._username,
@@ -638,18 +658,64 @@ class FnClubSignin(_PluginBase):
                 },
             )
             text = resp.text or ""
-            # Discuz 成功登录返回 ajax 成功标志或跳转
-            if "succeed" in text.lower() or "欢迎" in text or "location.href" in text and "logging" not in text.lower():
-                return True
-            # 通过 cookie 判断：登录后通常会设置 discuz_auth
+            low = text.lower()
+
+            # 1) Discuz 返回的登录失败消息（含错误原因）
+            if "succeed" not in low and ("error" in low or "失败" in text or "错误" in text):
+                if "密码" in text or "password" in low:
+                    return False, "用户名或密码错误"
+                if "验证" in text or "captcha" in low or "seccode" in low:
+                    return False, "触发登录验证码，请稍后重试或手动登录一次"
+                if "不存在" in text or ("用户" in text and "不存在" in text):
+                    return False, "账号不存在"
+                if "频繁" in text or "受限" in text:
+                    return False, "登录过于频繁或账号受限，请稍后重试"
+                return False, (text.strip()[:150] or "登录被拒绝")
+
+            # 2) 成功标志：ajax succeed / 欢迎 / 跳转
+            if "succeed" in low or "欢迎" in text or ("location.href" in text and "logging" not in low):
+                ok = await self._verify_login(client)
+                return (True, "登录成功") if ok else (False, "登录态校验未通过（疑似验证码拦截）")
+
+            # 3) 备用：cookie 判定（登录后设置 discuz_/uc_）
             for cookie in client.cookies.jar:
                 if cookie.name.startswith(("discuz_", "uc_")):
-                    return True
+                    ok = await self._verify_login(client)
+                    return (True, "登录成功") if ok else (False, "登录态校验未通过（疑似验证码拦截）")
+
             logger.warning(f"飞牛签到登录响应未识别：{text[:200]}")
-            return False
+            return False, "登录响应无法识别，请检查账号配置"
         except Exception as err:
             logger.error(f"飞牛签到登录请求异常：{err}")
+            return False, f"登录请求异常：{err}"
+
+    async def _verify_login(self, client: httpx2.AsyncClient) -> bool:
+        """登录后二次验证：访问首页，确认 Discuz 登录态（页面含"退出"链接）。"""
+        try:
+            html = await self._fetch(client, self._base_url + "/")
+            if not html:
+                return False
+            if "退出登录" in html or ">退出<" in html or "退出" in html:
+                return True
+            # 兜底：discuz_auth / uc_auth 会话 cookie
+            for cookie in client.cookies.jar:
+                if cookie.value and cookie.name.lower().startswith(("discuz_", "uc_")) and "auth" in cookie.name.lower():
+                    return True
             return False
+        except Exception as err:
+            logger.warning(f"飞牛签到登录态校验异常：{err}")
+            return False
+
+    def _dump_cookies(self, client: httpx2.AsyncClient) -> str:
+        """把客户端 Cookie 序列化为请求头字符串（Discuz 会话）。"""
+        try:
+            parts = []
+            for cookie in client.cookies.jar:
+                if cookie.value:
+                    parts.append(f"{cookie.name}={cookie.value}")
+            return "; ".join(parts)
+        except Exception:
+            return ""
 
     def _base_headers(self, cookie: str = "") -> dict:
         """构造基础请求头：随机 UA + 可选携带 Cookie。"""
