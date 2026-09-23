@@ -41,7 +41,7 @@ class FnClubSignin(_PluginBase):
     plugin_desc = "自动登录飞牛私有云论坛(club.fnnas.com)完成天天打卡，获取飞牛币。"
     plugin_icon = "https://club.fnnas.com/favicon.ico"
     plugin_version = "1.3.0"
-    plugin_author = "doubao"
+    plugin_author = "xiaotian"
     author_url = "https://club.fnnas.com"
     plugin_config_prefix = "fnnassignin_"
     plugin_order = 20
