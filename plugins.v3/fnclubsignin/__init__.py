@@ -31,7 +31,7 @@ from apscheduler.triggers.cron import CronTrigger
 from app.plugins import _PluginBase
 from app.sdk.events import Event, eventmanager
 from app.sdk.logging import logger
-from app.schemas.types import EventType
+from app.schemas.types import EventType, NotificationChannel
 
 
 class FnClubSignin(_PluginBase):
@@ -40,7 +40,7 @@ class FnClubSignin(_PluginBase):
     plugin_name = "飞牛论坛签到"
     plugin_desc = "自动登录飞牛私有云论坛(club.fnnas.com)完成天天打卡，获取飞牛币。"
     plugin_icon = "https://club.fnnas.com/favicon.ico"
-    plugin_version = "1.6.0"
+    plugin_version = "1.7.1"
     plugin_author = "xiaotian"
     author_url = "https://club.fnnas.com"
     plugin_config_prefix = "fnnassignin_"
@@ -76,6 +76,7 @@ class FnClubSignin(_PluginBase):
     _cookie = ""
     _cron = "0 8 * * *"
     _notify = True
+    _wechat_userid = ""
     _delay_seconds = 1800
     _humanize = True
 
@@ -88,6 +89,7 @@ class FnClubSignin(_PluginBase):
         self._cookie = str(config.get("cookie") or "").strip()
         self._cron = str(config.get("cron") or "0 8 * * *").strip()
         self._notify = bool(config.get("notify", True))
+        self._wechat_userid = str(config.get("wechat_userid") or "").strip()
         # 随机错峰：0-7200 秒随机延迟，避免每天准点打卡的脚本特征
         self._delay_seconds = int(config.get("delay_seconds") or 1800)
         if self._delay_seconds > 7200:
@@ -265,6 +267,7 @@ class FnClubSignin(_PluginBase):
                             switch("humanize", "人类化浏览(推荐)", "#4CAF50", "打卡前模拟浏览首页/板块，降低脚本特征"),
                             switch("skip_slide", "触发滑块验证时跳过(推荐)", "#FF9800", "检测到滑块/验证码自动跳过本次打卡，请手动打卡一次"),
                             switch("notify", "签到结果通知", "#2196F3"),
+                            field("wechat_userid", "微信ClawBot用户ID(可选)", "如 18525750988，填了则推送到微信，留空用默认渠道", md=6),
                         ],
                     ),
                 ],
@@ -279,6 +282,7 @@ class FnClubSignin(_PluginBase):
             "humanize": self._humanize,
             "skip_slide": self._skip_slide,
             "notify": self._notify,
+            "wechat_userid": self._wechat_userid,
         }
 
     def get_page(self) -> list[dict]:
@@ -498,6 +502,10 @@ class FnClubSignin(_PluginBase):
         # 通知
         if self._notify:
             try:
+                kwargs = {}
+                if self._wechat_userid:
+                    kwargs["channel"] = NotificationChannel.WechatClawBot
+                    kwargs["userid"] = self._wechat_userid
                 self.post_message(
                     title=f"飞牛论坛签到{'成功' if result['success'] else '失败'}",
                     text=(
@@ -505,6 +513,7 @@ class FnClubSignin(_PluginBase):
                         f"结果：{result['message']}\n"
                         f"详情：{result['detail']}"
                     ),
+                    **kwargs,
                 )
             except Exception as err:
                 logger.warning(f"飞牛签到通知发送失败：{err}")
@@ -763,6 +772,9 @@ class FnClubSignin(_PluginBase):
         """
         if not cookie:
             return ""
+        # 1) 只取第一行：浏览器复制 Cookie 时可能混入后续请求头行（如 Pragma/no-cache），
+        #    含换行会导致 httpx "Illegal header value" 而请求直接失败
+        cookie = cookie.splitlines()[0].strip() if cookie.splitlines() else cookie.strip()
         parts = []
         for item in cookie.split(";"):
             item = item.strip()
@@ -770,6 +782,9 @@ class FnClubSignin(_PluginBase):
                 continue
             name = item.split("=", 1)[0].strip().lower()
             if name in ("acw_tc", "cdn_sec_tc"):
+                continue
+            # 非 Cookie 的请求头行（如 "Pragma no-cache"、"Content-Type: ..."）
+            if "=" not in item or ":" in name:
                 continue
             parts.append(item)
         return "; ".join(parts)
