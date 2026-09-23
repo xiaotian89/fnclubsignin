@@ -1,15 +1,16 @@
 {
   "FnClubSignin": {
     "name": "飞牛论坛签到",
-    "description": "自动登录飞牛私有云论坛(club.fnnas.com)完成天天打卡，获取飞牛币。",
+    "description": "飞牛论坛(club.fnnas.com)每日自动签到，获取飞牛币。Cookie直签优先，随机错峰+人类化浏览规避异常打卡。",
     "labels": "论坛,签到,飞牛",
-    "version": "1.0.0",
+    "version": "1.3.0",
     "icon": "https://club.fnnas.com/favicon.ico",
-    "author": "doubao",
+    "author": "xiaotian",
     "level": 1,
-    "release": false,
-    "system_version": ">=3.0.0,<4",
+    "release": true,
+    "system_version": ">=3.0.0",
     "history": {
+      "v1.3.0": "Cookie直签优先+随机错峰+人类化浏览，界面按V2蜂巢签到模板重写",
       "v1.0.0": "首次发布：飞牛论坛每日自动签到。"
     }
   }
