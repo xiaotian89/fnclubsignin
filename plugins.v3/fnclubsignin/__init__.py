@@ -40,7 +40,7 @@ class FnClubSignin(_PluginBase):
     plugin_name = "飞牛论坛签到"
     plugin_desc = "自动登录飞牛私有云论坛(club.fnnas.com)完成天天打卡，获取飞牛币。"
     plugin_icon = "https://club.fnnas.com/favicon.ico"
-    plugin_version = "1.4.0"
+    plugin_version = "1.6.0"
     plugin_author = "xiaotian"
     author_url = "https://club.fnnas.com"
     plugin_config_prefix = "fnnassignin_"
@@ -93,6 +93,8 @@ class FnClubSignin(_PluginBase):
         if self._delay_seconds > 7200:
             self._delay_seconds = 7200
         self._humanize = bool(config.get("humanize", True))
+        # 触发滑块/验证码时自动跳过本次打卡（保护账号，避免反复触发真人验证）
+        self._skip_slide = bool(config.get("skip_slide", True))
 
     def get_state(self) -> bool:
         """返回插件是否启用。"""
@@ -261,6 +263,7 @@ class FnClubSignin(_PluginBase):
                             field("cron", "签到时间(Cron)", "默认 0 8 * * *（每天08:00）", md=6),
                             field("delay_seconds", "随机错峰秒数(0-7200)", "默认1800：定时触发后随机延迟0-30分钟", md=6),
                             switch("humanize", "人类化浏览(推荐)", "#4CAF50", "打卡前模拟浏览首页/板块，降低脚本特征"),
+                            switch("skip_slide", "触发滑块验证时跳过(推荐)", "#FF9800", "检测到滑块/验证码自动跳过本次打卡，请手动打卡一次"),
                             switch("notify", "签到结果通知", "#2196F3"),
                         ],
                     ),
@@ -274,6 +277,7 @@ class FnClubSignin(_PluginBase):
             "cron": self._cron,
             "delay_seconds": self._delay_seconds,
             "humanize": self._humanize,
+            "skip_slide": self._skip_slide,
             "notify": self._notify,
         }
 
@@ -538,6 +542,10 @@ class FnClubSignin(_PluginBase):
             if not formhash:
                 return {"success": False, "message": "页面未返回 formhash", "detail": ""}
 
+            # 1.5 打卡页触发滑块验证 → 按配置跳过（无需登录）
+            if self._skip_slide and self._is_slide_required(page_html):
+                return {"success": False, "message": "触发滑块验证已跳过", "detail": "为保护账号已自动跳过，请手动打卡一次，明日自动恢复"}
+
             # 2. 模拟登录（内置登录态二次验证）
             login_ok, login_detail = await self._login(client, formhash)
             if not login_ok:
@@ -564,6 +572,10 @@ class FnClubSignin(_PluginBase):
             if "今日已打卡" in page_html2:
                 return {"success": True, "message": "今日已打卡", "detail": "无需重复签到"}
 
+            # 登录后打卡页触发滑块验证 → 按配置跳过
+            if self._skip_slide and self._is_slide_required(page_html2):
+                return {"success": False, "message": "触发滑块验证已跳过", "detail": "为保护账号已自动跳过，请手动打卡一次，明日自动恢复"}
+
             if not sign2:
                 return {"success": False, "message": "未获取到打卡入口", "detail": "可能已打卡或需要验证码"}
 
@@ -580,14 +592,19 @@ class FnClubSignin(_PluginBase):
         async with httpx2.AsyncClient(
             timeout=httpx2.Timeout(30.0),
             follow_redirects=True,
-            headers=self._base_headers(cookie=self._cookie),
+            headers=self._base_headers(),
         ) as client:
-            # 0. 人类化浏览：先"顺路逛"几个页面，再进打卡页（降低直达打卡页的脚本特征）
-            if self._humanize:
-                await self._humanize_walk(client)
+            # 0. 先访问首页，让容器获得自己的 WAF 会话（acw_tc），避免旧 Cookie 中的浏览器会话因出口 IP 不同被拦截
+            await self._fetch(client, self._base_url + "/")
+            # 组装论坛 Cookie：剔除 WAF 会话项，仅保留论坛登录态
+            use_cookie = self._clean_waf_cookies(self._cookie)
 
-            # 1. 访问打卡页
-            page_html = await self._fetch(client, self._base_url + self._sign_page)
+            # 1. 人类化浏览：先"顺路逛"几个页面，再进打卡页（降低直达打卡页的脚本特征）
+            if self._humanize:
+                await self._humanize_walk(client, cookie=use_cookie)
+
+            # 2. 访问打卡页
+            page_html = await self._fetch(client, self._base_url + self._sign_page, cookie=use_cookie)
             if not page_html:
                 return {"success": False, "message": "无法访问打卡页", "detail": ""}
 
@@ -599,6 +616,10 @@ class FnClubSignin(_PluginBase):
             if "今日已打卡" in page_html:
                 return {"success": True, "message": "今日已打卡", "detail": "无需重复签到"}
 
+            # 滑块/验证码检测：触发则按配置跳过（不发出打卡请求，保护账号）
+            if self._skip_slide and self._is_slide_required(page_html):
+                return {"success": False, "message": "触发滑块验证已跳过", "detail": "为保护账号已自动跳过，请手动打卡一次，明日自动恢复"}
+
             # 提取打卡入口
             sign = self._extract_sign(page_html)
             if not sign:
@@ -607,22 +628,23 @@ class FnClubSignin(_PluginBase):
             # 打卡前短暂停留（模拟阅读页面）
             await asyncio.sleep(random.uniform(0.8, 3.0))
 
-            # 执行打卡（带 Referer 模拟从打卡页点击）
+            # 执行打卡（带 Referer 模拟从打卡页点击，并携带论坛 Cookie）
             sign_url = self._base_url + f"/plugin.php?id=zqlj_sign&sign={sign}"
             resp_html = await self._fetch(
                 client, sign_url,
                 referer=self._base_url + self._sign_page,
+                cookie=use_cookie,
             )
             if not resp_html:
                 return {"success": False, "message": "打卡请求失败", "detail": ""}
 
             return self._parse_sign_result(resp_html)
 
-    async def _humanize_walk(self, client: httpx2.AsyncClient) -> None:
-        """模拟人类浏览：随机逛 1-2 个页面，每次间隔随机，最后回打卡页。"""
+    async def _humanize_walk(self, client: httpx2.AsyncClient, cookie: str = "") -> None:
+        """模拟人类浏览：随机逛 1-2 个页面，每次间隔随机。cookie 为空时按游客浏览。"""
         try:
             # 先访问首页（人类进入论坛的第一站）
-            await self._fetch(client, self._base_url + "/")
+            await self._fetch(client, self._base_url + "/", cookie=cookie)
             await asyncio.sleep(random.uniform(1.2, 3.5))
             # 随机逛 1-2 个板块/页面
             walk_count = random.randint(1, 2)
@@ -632,7 +654,7 @@ class FnClubSignin(_PluginBase):
                 if page in visited:
                     continue
                 visited.add(page)
-                await self._fetch(client, self._base_url + page)
+                await self._fetch(client, self._base_url + page, cookie=cookie)
                 await asyncio.sleep(random.uniform(2.0, 5.5))
         except Exception as err:
             logger.warning(f"飞牛签到：人类化浏览跳过({err})")
@@ -731,12 +753,38 @@ class FnClubSignin(_PluginBase):
             headers["Cookie"] = cookie
         return headers
 
-    async def _fetch(self, client: httpx2.AsyncClient, url: str, referer: str = "") -> str:
-        """GET 请求并返回页面文本，失败返回空字符串。"""
+    @staticmethod
+    def _clean_waf_cookies(cookie: str) -> str:
+        """剔除 Cookie 中的 WAF 会话项（acw_tc/cdn_sec_tc）。
+
+        论坛经阿里云 ESA WAF 防护，acw_tc 与出口 IP 绑定；容器与浏览器出口 IP 不同，
+        直接用浏览器复制的 Cookie 会被 WAF 校验失败而重置连接。先访问首页让容器获得
+        自己的 acw_tc 后，再仅携带论坛登录态 Cookie 即可正常访问。
+        """
+        if not cookie:
+            return ""
+        parts = []
+        for item in cookie.split(";"):
+            item = item.strip()
+            if not item:
+                continue
+            name = item.split("=", 1)[0].strip().lower()
+            if name in ("acw_tc", "cdn_sec_tc"):
+                continue
+            parts.append(item)
+        return "; ".join(parts)
+
+    async def _fetch(self, client: httpx2.AsyncClient, url: str, referer: str = "", cookie: str = "") -> str:
+        """GET 请求并返回页面文本，失败返回空字符串。可选携带 Referer 与 Cookie。"""
         try:
             kwargs: dict[str, Any] = {}
+            headers: dict[str, str] = {}
             if referer:
-                kwargs["headers"] = {"Referer": referer}
+                headers["Referer"] = referer
+            if cookie:
+                headers["Cookie"] = cookie
+            if headers:
+                kwargs["headers"] = headers
             resp = await client.get(url, **kwargs)
             if resp.status_code != 200:
                 logger.warning(f"飞牛签到 HTTP {resp.status_code}: {url}")
@@ -761,6 +809,19 @@ class FnClubSignin(_PluginBase):
         if not m:
             m = re.search(r'plugin\.php\?id=zqlj_sign&sign=([a-f0-9]+)', html)
         return m.group(1) if m else ""
+
+    @staticmethod
+    def _is_slide_required(html: str) -> bool:
+        """检测页面是否触发滑块/图形验证码。命中即应跳过打卡，避免反复触发真人验证。"""
+        if not html:
+            return False
+        low = html.lower()
+        markers = (
+            "slide", "verify", "captcha", "seccode",
+            "geetest", "gt.js", "gt4",
+            "拖动", "滑块", "验证码",
+        )
+        return any(m in low for m in markers)
 
     @staticmethod
     def _parse_sign_result(html: str) -> dict:
