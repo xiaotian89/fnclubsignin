@@ -1,20 +1,7 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """飞牛论坛签到插件 - MoviePilot V3
 
-自动登录飞牛私有云论坛(club.fnnas.com)并完成"天天打卡"签到，获取飞牛币奖励。
-
-功能：
-- 每日定时自动签到（可配置时间 + 随机错峰）
-- 两种登录方式：Cookie 直签（推荐） / 账号密码模拟登录
-- 人类化浏览：打卡前模拟真实用户先逛首页/板块，随机间隔再打卡
-- 随机 User-Agent 池轮换，降低脚本特征
-- 解析打卡结果（成功 / 今日已打卡 / 需验证码）
-- 签到结果推送到 MoviePilot 通知渠道
-- 签到历史记录（最近30次）
-
-注意：飞牛社区规则明确"请勿使用插件打卡，异常打卡经核实，将会扣除飞牛币"。
-使用本插件即视为接受该风险。本插件通过随机错峰、随机UA、模拟浏览等方式
-尽可能贴近真人行为，但无法完全消除被识别为自动化的风险。
+每天自动打卡领飞牛币。
 """
 from __future__ import annotations
 
@@ -35,10 +22,10 @@ from app.schemas.types import EventType, NotificationChannel
 
 
 class FnClubSignin(_PluginBase):
-    """飞牛论坛(club.fnnas.com)每日自动签到。"""
+    """飞牛论坛每日自动签到。"""
 
     plugin_name = "飞牛论坛签到"
-    plugin_desc = "自动登录飞牛私有云论坛(club.fnnas.com)完成天天打卡，获取飞牛币。"
+    plugin_desc = "飞牛论坛每天自动打卡领飞牛币。"
     plugin_icon = "https://club.fnnas.com/favicon.ico"
     plugin_version = "1.7.2"
     plugin_author = "xiaotian"
