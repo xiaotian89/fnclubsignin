@@ -40,7 +40,7 @@ class FnClubSignin(_PluginBase):
     plugin_name = "飞牛论坛签到"
     plugin_desc = "自动登录飞牛私有云论坛(club.fnnas.com)完成天天打卡，获取飞牛币。"
     plugin_icon = "https://club.fnnas.com/favicon.ico"
-    plugin_version = "1.7.1"
+    plugin_version = "1.7.2"
     plugin_author = "xiaotian"
     author_url = "https://club.fnnas.com"
     plugin_config_prefix = "fnnassignin_"
@@ -76,7 +76,6 @@ class FnClubSignin(_PluginBase):
     _cookie = ""
     _cron = "0 8 * * *"
     _notify = True
-    _wechat_userid = ""
     _delay_seconds = 1800
     _humanize = True
 
@@ -89,7 +88,6 @@ class FnClubSignin(_PluginBase):
         self._cookie = str(config.get("cookie") or "").strip()
         self._cron = str(config.get("cron") or "0 8 * * *").strip()
         self._notify = bool(config.get("notify", True))
-        self._wechat_userid = str(config.get("wechat_userid") or "").strip()
         # 随机错峰：0-7200 秒随机延迟，避免每天准点打卡的脚本特征
         self._delay_seconds = int(config.get("delay_seconds") or 1800)
         if self._delay_seconds > 7200:
@@ -266,8 +264,7 @@ class FnClubSignin(_PluginBase):
                             field("delay_seconds", "随机错峰秒数(0-7200)", "默认1800：定时触发后随机延迟0-30分钟", md=6),
                             switch("humanize", "人类化浏览(推荐)", "#4CAF50", "打卡前模拟浏览首页/板块，降低脚本特征"),
                             switch("skip_slide", "触发滑块验证时跳过(推荐)", "#FF9800", "检测到滑块/验证码自动跳过本次打卡，请手动打卡一次"),
-                            switch("notify", "签到结果通知", "#2196F3"),
-                            field("wechat_userid", "微信ClawBot用户ID(可选)", "如 18525750988，填了则推送到微信，留空用默认渠道", md=6),
+                            switch("notify", "签到结果通知", "#2196F3", "签到结果推送到 MP 全局微信 ClawBot（在通知设置中配置默认目标）"),
                         ],
                     ),
                 ],
@@ -282,7 +279,6 @@ class FnClubSignin(_PluginBase):
             "humanize": self._humanize,
             "skip_slide": self._skip_slide,
             "notify": self._notify,
-            "wechat_userid": self._wechat_userid,
         }
 
     def get_page(self) -> list[dict]:
@@ -499,21 +495,17 @@ class FnClubSignin(_PluginBase):
 
         # 记录历史
         self._record(result)
-        # 通知
+        # 通知：走 MP 全局微信 ClawBot（默认目标在通知设置中配置，无需插件单独填 userid）
         if self._notify:
             try:
-                kwargs = {}
-                if self._wechat_userid:
-                    kwargs["channel"] = NotificationChannel.WechatClawBot
-                    kwargs["userid"] = self._wechat_userid
                 self.post_message(
+                    channel=NotificationChannel.WechatClawBot,
                     title=f"飞牛论坛签到{'成功' if result['success'] else '失败'}",
                     text=(
                         f"账号：{self._username or 'Cookie模式'}\n"
                         f"结果：{result['message']}\n"
                         f"详情：{result['detail']}"
                     ),
-                    **kwargs,
                 )
             except Exception as err:
                 logger.warning(f"飞牛签到通知发送失败：{err}")
