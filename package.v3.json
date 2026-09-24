@@ -1,15 +1,16 @@
 {
     "FnClubSignin": {
         "name": "飞牛论坛签到",
-        "description": "飞牛论坛(club.fnnas.com)每日自动签到，获取飞牛币。Cookie直签优先（自动清洗WAF会话与多行复制污染），失效自动降级账号密码登录，登录态二次验证，滑块验证自动跳过，随机错峰+人类化浏览规避异常打卡，微信ClawBot通知。",
+        "description": "飞牛论坛(club.fnnas.com)每日自动签到，获取飞牛币。Cookie直签优先（自动清洗WAF会话与多行复制污染），失效自动降级账号密码登录，登录态二次验证，滑块验证自动跳过，随机错峰+人类化浏览规避异常打卡，微信ClawBot通知（共用MP全局默认目标）。",
         "labels": "论坛,签到,飞牛",
-        "version": "1.7.1",
+        "version": "1.7.2",
         "icon": "https://club.fnnas.com/favicon.ico",
         "author": "xiaotian",
         "level": 1,
         "release": true,
         "system_version": ">=3.0.0",
         "history": {
+            "v1.7.2": "移除插件内微信用户ID配置项，通知统一走 MP 全局微信 ClawBot 默认目标（在通知设置中配置），无需插件单独填写",
             "v1.7.1": "修复微信通知通道：支持 channel=WechatClawBot + userid；Cookie清洗增强（截断多行复制污染，修复Illegal header value）",
             "v1.7.0": "Cookie清洗增强：截断浏览器复制Cookie混入的请求头行（Pragma/no-cache），修复请求被拒",
             "v1.6.0": "修复Cookie直签被WAF拦截：先访问首页获取容器自身acw_tc会话，剔除旧Cookie中的WAF项，登录态Cookie直签更稳定",
